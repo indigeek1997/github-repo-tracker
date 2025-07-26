@@ -2,20 +2,32 @@ package com.github.activity.repo_tracker.exception;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@ControllerAdvice
+import java.util.HashMap;
+import java.util.Map;
+
+@RestControllerAdvice
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(GitHubApiException.class)
-    public ResponseEntity<ErrorResponse> handleGitHubApiException(GitHubApiException ex) {
-        ErrorResponse error = new ErrorResponse("GitHub API Error", ex.getMessage(), HttpStatus.BAD_GATEWAY.value());
-        return new ResponseEntity<>(error, HttpStatus.BAD_GATEWAY);
+    public ResponseEntity<Map<String, Object>> handleGitHubApiException(GitHubApiException ex) {
+        Map<String, Object> errorResponse = new HashMap<>();
+        errorResponse.put("error", "GitHub API Error");
+        errorResponse.put("message", ex.getMessage());
+        errorResponse.put("status", ex.getStatus().value());
+
+        return ResponseEntity.status(ex.getStatus()).body(errorResponse);
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
-        ErrorResponse error = new ErrorResponse("Internal Error", ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value());
-        return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+    public ResponseEntity<Map<String, Object>> handleGeneralException(Exception ex) {
+        Map<String, Object> errorResponse = new HashMap<>();
+        errorResponse.put("error", "Internal Server Error");
+        errorResponse.put("message", ex.getMessage());
+        errorResponse.put("status", 500);
+
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
     }
 }

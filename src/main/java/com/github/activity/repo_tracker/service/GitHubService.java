@@ -7,6 +7,7 @@ import com.github.activity.repo_tracker.model.CommitInfo;
 import com.github.activity.repo_tracker.model.RepoInfo;
 import lombok.Setter;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
@@ -26,7 +27,7 @@ public class GitHubService {
     private static final String GITHUB_BASE_URI = "https://api.github.com/";
     private static final String AUTHORIZATION = "Authorization";
     private static final String BEARER = "Bearer ";
-    private static final String REPOS_PER_PAGE = "1";
+    private static final String REPOS_PER_PAGE = "100";
     private static final String COMMITS_PER_PAGE = "20";
 
     @Setter
@@ -50,11 +51,7 @@ public class GitHubService {
                         .build();
 
                 HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-                if (response.statusCode() != 200) {
-                    throw new GitHubApiException("Failed to fetch repos for user: " + username +
-                            ", Status: " + response.statusCode());
-                }
+                handleGitHubErrorStatus(response.statusCode(), username);
 
                 String responseBody = response.body();
                 JsonNode root = mapper.readTree(responseBody);
@@ -65,21 +62,24 @@ public class GitHubService {
                     JsonNode nameNode = repoNode.get("name");
                     String repoName = Objects.nonNull(nameNode) ? nameNode.asText() : "unknown-repo";
 
-                    List<CommitInfo> commitInfos = fetchRecentCommits(username, repoName, client, mapper);
+                    List<CommitInfo> commitInfos = fetchRecentCommits(username, repoName);
                     repoInfos.add(new RepoInfo(repoName, commitInfos));
                 }
 
                 page++;
 
+            } catch (GitHubApiException e) {
+                throw e;
             } catch (Exception e) {
-                throw new GitHubApiException("Error fetching repositories for user: " + username + ". Reason: " + e.getMessage());
+                throw new GitHubApiException("Unexpected error while fetching repositories for user: " + username
+                        + ". Reason: " + e.getMessage(), HttpStatus.BAD_GATEWAY);
             }
         }
 
         return repoInfos;
     }
 
-    private List<CommitInfo> fetchRecentCommits(String username, String repoName, HttpClient client, ObjectMapper mapper) {
+    private List<CommitInfo> fetchRecentCommits(String username, String repoName) {
         List<CommitInfo> commitInfos = new ArrayList<>();
 
         try {
@@ -91,11 +91,9 @@ public class GitHubService {
             HttpResponse<String> commitResponse = client.send(commitRequest, HttpResponse.BodyHandlers.ofString());
 
             if (commitResponse.statusCode() == 409) {
-                // Repo is empty, skipping it gracefully
-                return List.of(); // Return empty commit list
-            }else if (commitResponse.statusCode() != 200) {
-                throw new GitHubApiException("Failed to fetch commits for repo: " + repoName +
-                        ", Status: " + commitResponse.statusCode());
+                return List.of(); // empty commits
+            } else if (commitResponse.statusCode() != 200) {
+                throw new GitHubApiException("Failed to fetch commits for repo: " + repoName + ", Status: " + commitResponse.statusCode(), HttpStatus.BAD_GATEWAY);
             }
 
             String commitBody = commitResponse.body();
@@ -106,22 +104,38 @@ public class GitHubService {
                 if (commit != null) {
                     JsonNode commitAuthor = commit.get("author");
 
-                    String message = Objects.nonNull(commit.get("message")) ?
-                            commit.get("message").asText() : "No message";
-                    String author = (Objects.nonNull(commitAuthor) && Objects.nonNull(commitAuthor.get("name"))) ?
-                            commitAuthor.get("name").asText() : "Unknown";
-                    String timestamp = (Objects.nonNull(commitAuthor) && Objects.nonNull(commitAuthor.get("date"))) ?
-                            commitAuthor.get("date").asText() : "Unknown";
+                    String message = Objects.nonNull(commit.get("message")) ? commit.get("message").asText() : "No message";
+                    String author = (Objects.nonNull(commitAuthor) && Objects.nonNull(commitAuthor.get("name"))) ? commitAuthor.get("name").asText() : "Unknown";
+                    String timestamp = (Objects.nonNull(commitAuthor) && Objects.nonNull(commitAuthor.get("date"))) ? commitAuthor.get("date").asText() : "Unknown";
 
                     commitInfos.add(new CommitInfo(message, author, timestamp));
                 }
             }
 
+        } catch (GitHubApiException ex) {
+            throw ex;
         } catch (Exception ex) {
-            throw new GitHubApiException("Error fetching commits for repo: " + repoName + ". Reason: " + ex.getMessage());
+            throw new GitHubApiException("Error fetching commits for repo: " + repoName + ". Reason: " + ex.getMessage(),
+                    HttpStatus.BAD_GATEWAY);
         }
 
         return commitInfos;
     }
 
+    private void handleGitHubErrorStatus(int statusCode, String username) {
+        switch (statusCode) {
+            case 200: // All ok
+                return;
+            case 401:
+                throw new GitHubApiException("Unauthorized - Invalid or missing GitHub token", HttpStatus.UNAUTHORIZED);
+            case 404:
+                throw new GitHubApiException("GitHub user not found: " + username, HttpStatus.NOT_FOUND);
+            case 429:
+                throw new GitHubApiException("Rate limit exceeded. Please try again later.", HttpStatus.TOO_MANY_REQUESTS);
+            case 503:
+                throw new GitHubApiException("GitHub service unavailable. Try again later.", HttpStatus.SERVICE_UNAVAILABLE);
+            default:
+                throw new GitHubApiException("Unexpected error while fetching repos for user: " + username + ". Status: " + statusCode, HttpStatus.BAD_GATEWAY);
+        }
+    }
 }
